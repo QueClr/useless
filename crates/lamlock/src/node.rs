@@ -77,7 +77,7 @@ impl Node {
     #[cfg(all(feature = "nightly", not(miri)))]
     pub unsafe fn prefetch_next(&self, ordering: Ordering) {
         let ptr = self.next.load(ordering);
-        unsafe { core::intrinsics::prefetch_write_data(ptr, 3) };
+        core::intrinsics::prefetch_write_data::<_, 3>(ptr);
     }
 
     /// Store the next node in the linked list.
