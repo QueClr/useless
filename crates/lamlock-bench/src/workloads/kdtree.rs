@@ -2,7 +2,6 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::harness::ThreadRecorder;
 use crate::schedule::Schedule;
 use crate::workloads::Workload;
 
@@ -162,8 +161,8 @@ impl Workload for KdTreeWorkload {
         &self,
         lock: &S,
         thread_id: usize,
+        _thread_count: usize,
         ops: usize,
-        recorder: &mut ThreadRecorder,
     ) {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(thread_id as u64 * 54321 + 11111);
 
@@ -179,7 +178,6 @@ impl Workload for KdTreeWorkload {
             })
             .collect();
 
-        recorder.record();
         for i in 0..ops {
             if op_types[i] {
                 // 70%: nearest-neighbor search
@@ -194,7 +192,6 @@ impl Workload for KdTreeWorkload {
                     tree.insert(point);
                 });
             }
-            recorder.record();
         }
     }
 }

@@ -4,7 +4,6 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::harness::ThreadRecorder;
 use crate::schedule::Schedule;
 use crate::workloads::Workload;
 
@@ -55,8 +54,8 @@ impl Workload for DatabaseWorkload {
         &self,
         lock: &S,
         thread_id: usize,
+        _thread_count: usize,
         ops: usize,
-        recorder: &mut ThreadRecorder,
     ) {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(thread_id as u64 * 99999 + 42);
         let n = INITIAL_ENTRIES as u64;
@@ -81,7 +80,6 @@ impl Workload for DatabaseWorkload {
             })
             .collect();
 
-        recorder.record();
         for op in operations {
             match op {
                 DbOp::Read(key) => {
@@ -107,7 +105,6 @@ impl Workload for DatabaseWorkload {
                     });
                 }
             }
-            recorder.record();
         }
     }
 }

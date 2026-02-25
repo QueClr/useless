@@ -2,7 +2,6 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::harness::ThreadRecorder;
 use crate::schedule::Schedule;
 use crate::workloads::Workload;
 
@@ -63,18 +62,16 @@ impl Workload for CombiningWorkload {
         &self,
         lock: &S,
         thread_id: usize,
+        _thread_count: usize,
         ops: usize,
-        recorder: &mut ThreadRecorder,
     ) {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(thread_id as u64 * 12345 + 67890);
         let samples: Vec<f64> = (0..ops).map(|_| rng.random::<f64>() * 64.0).collect();
 
-        recorder.record();
         for &sample in &samples {
             lock.schedule(|state| {
                 state.add_sample(sample);
             });
-            recorder.record();
         }
     }
 }
