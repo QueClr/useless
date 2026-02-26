@@ -1,11 +1,7 @@
-pub mod btree;
-pub mod combining;
-pub mod database;
-pub mod kdtree;
-pub mod lru;
-pub mod nbody;
+pub mod pqueue;
+pub mod ringbuf;
 pub mod slab;
-pub mod wal;
+pub mod stack;
 
 use crate::schedule::Schedule;
 

@@ -7,7 +7,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use crate::schedule::Schedule;
 use crate::workloads::Workload;
 
-const NUM_SLABS: usize = 64;
+const NUM_SLABS: usize = 384;
 const SLOTS_PER_SLAB: usize = 512; // 8 × u64 bitmap words
 const BITMAP_WORDS: usize = SLOTS_PER_SLAB / 64;
 /// Batch size: how many alloc/free ops each thread submits per lock.schedule() call.
@@ -70,9 +70,13 @@ impl SlabAllocator {
         let word_idx = within_slab / 64;
         let bit_idx = within_slab % 64;
         let slab = &mut self.slabs[slab_idx];
-        slab.bitmap[word_idx] &= !(1u64 << bit_idx);
-        slab.free_count += 1;
-        self.free_count += 1;
+        let mask = 1u64 << bit_idx;
+        // Guard: only free if the slot is actually allocated.
+        if slab.bitmap[word_idx] & mask != 0 {
+            slab.bitmap[word_idx] &= !mask;
+            slab.free_count += 1;
+            self.free_count += 1;
+        }
     }
 }
 
@@ -176,9 +180,14 @@ impl Workload for SlabWorkload {
             });
 
             held.extend(results);
-            // Trim if too many held
-            while held.len() > MAX_HELD_PER_THREAD {
-                held.pop();
+            // Free excess slots back to the allocator instead of leaking them.
+            if held.len() > MAX_HELD_PER_THREAD {
+                let excess: Vec<usize> = held.split_off(MAX_HELD_PER_THREAD);
+                lock.schedule(|alloc| {
+                    for &slot in &excess {
+                        alloc.free(slot);
+                    }
+                });
             }
         }
         black_box(&held);

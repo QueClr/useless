@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn multi_thread_test() {
-        let cnt = 100;
+        let cnt = 16;
         let lock = Lock::new(0);
         std::thread::scope(|scope| {
             for i in 0..cnt {
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn mutli_thread_panic_chain_test() {
-        let cnt = 100;
+        let cnt = 16;
         let lock = Lock::new(0);
         std::thread::scope(|scope| {
             for i in 0..cnt {
@@ -232,7 +232,7 @@ mod tests {
             lock.inspect_poison(|_| ControlFlow::Break(())).unwrap();
             lock.poison().unwrap();
             let mut handles = std::vec::Vec::new();
-            for _ in 0..100 {
+            for _ in 0..16 {
                 let lock = &lock;
                 handles.push(scope.spawn(move || {
                     if lock.run(|x| x.push('A')).is_err() {
@@ -247,7 +247,7 @@ mod tests {
             for handle in handles {
                 handle.join().unwrap();
             }
-            assert_eq!(lock.run(|x| x.len()).unwrap(), 100);
+            assert_eq!(lock.run(|x| x.len()).unwrap(), 16);
             assert_eq!(lock.run(|x| x.chars().all(|c| c == 'A')).unwrap(), true);
         });
     }

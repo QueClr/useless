@@ -40,9 +40,10 @@ impl<T: Send> Schedule<T> for Mutex<T> {
 }
 
 fn integer_add_bench<T: Schedule<i32>>() {
+    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let lock = T::new(0);
     std::thread::scope(|scope| {
-        for _ in 0..128 {
+        for _ in 0..num_threads {
             let lock = &lock;
             scope.spawn(move || {
                 lock.schedule(|data| {
@@ -56,9 +57,10 @@ fn integer_add_bench<T: Schedule<i32>>() {
 }
 
 fn string_concat_bench<T: Schedule<String>>() {
+    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let lock = T::new(String::new());
     std::thread::scope(|scope| {
-        for _ in 0..128 {
+        for _ in 0..num_threads {
             let lock = &lock;
             scope.spawn(move || {
                 lock.schedule(|data| {
@@ -72,9 +74,10 @@ fn string_concat_bench<T: Schedule<String>>() {
 }
 
 fn hashtable_bench<T: Schedule<HashMap<String, String>>>() {
+    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let lock = T::new(std::collections::HashMap::new());
     std::thread::scope(|scope| {
-        for t in 0..256 {
+        for t in 0..num_threads {
             let lock = &lock;
             scope.spawn(move || {
                 lock.schedule(|data| {
@@ -88,9 +91,10 @@ fn hashtable_bench<T: Schedule<HashMap<String, String>>>() {
 }
 
 fn initialization<T: Schedule<HashMap<String, String>>>() {
+    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let lock = T::new(std::collections::HashMap::new());
     std::thread::scope(|scope| {
-        for _ in 0..256 {
+        for _ in 0..num_threads {
             let lock = &lock;
             scope.spawn(move || {
                 lock.schedule(|data| {
@@ -109,9 +113,10 @@ fn initialization<T: Schedule<HashMap<String, String>>>() {
 }
 
 fn integer_add_bench_bad<T: Schedule<i32>>() {
+    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let lock = T::new(0);
     std::thread::scope(|scope| {
-        for _ in 0..128 {
+        for _ in 0..num_threads {
             let lock = &lock;
             scope.spawn(move || {
                 for i in 0..1000 {
