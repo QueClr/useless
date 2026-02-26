@@ -14,6 +14,9 @@ const KEY_SPACE: u64 = 16384;
 const ZIPF_EXPONENT: f64 = 1.2;
 const SENTINEL: usize = usize::MAX;
 
+/// Batch size: how many cache ops each thread submits per lock.schedule() call.
+const BATCH_SIZE: usize = 1000;
+
 /// FNV-1a hash (32-bit).
 fn fnv1a(data: &[u8]) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
@@ -180,6 +183,17 @@ impl LruCache {
         self.len += 1;
         evicted
     }
+
+    /// Combined get-or-insert: look up key, if miss insert with provided value.
+    /// Returns true on hit, false on miss (value was inserted).
+    fn get_or_insert(&mut self, key: u64, value: &[u8; VALUE_SIZE]) -> bool {
+        if self.get(key) {
+            true
+        } else {
+            self.put(key, value);
+            false
+        }
+    }
 }
 
 pub struct LruWorkload;
@@ -192,7 +206,7 @@ impl Workload for LruWorkload {
     }
 
     fn description(&self) -> &'static str {
-        "LRU cache with compute-on-miss — every access mutates recency order"
+        "LRU cache — batched get-or-insert with compute-on-miss"
     }
 
     fn init_state(&self) -> Self::State {
@@ -214,22 +228,30 @@ impl Workload for LruWorkload {
     ) {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(thread_id as u64 * 88888 + 24680);
 
-        for _ in 0..ops {
-            // [OUTSIDE] Generate Zipfian key
-            let key = zipfian_key(&mut rng, KEY_SPACE);
-
-            // [INSIDE] Probe cache
-            let hit = lock.schedule(|cache| cache.get(key));
-
-            if !black_box(hit) {
-                // Cache miss: compute value outside lock
-                // [OUTSIDE] Expensive computation the cache exists to avoid
+        // [OUTSIDE] Pre-generate all keys and compute their values upfront.
+        // In a real system the value computation is the expensive part we cache to avoid,
+        // but for the benchmark we pre-compute so the entire batch can be submitted to the lock.
+        let batch_data: Vec<(u64, [u8; VALUE_SIZE])> = (0..ops)
+            .map(|_| {
+                let key = zipfian_key(&mut rng, KEY_SPACE);
                 let value = compute_value(key);
+                (key, value)
+            })
+            .collect();
 
-                // [INSIDE] Insert computed value
-                let evicted = lock.schedule(|cache| cache.put(key, &value));
-                black_box(evicted);
-            }
+        // [INSIDE] Submit work in BATCHES — the combiner processes many LRU operations
+        // (linked-list pointer manipulation + HashMap lookups) while the cache stays hot.
+        for batch in batch_data.chunks(BATCH_SIZE) {
+            let hits = lock.schedule(|cache| {
+                let mut hit_count = 0u64;
+                for &(key, ref value) in batch {
+                    if cache.get_or_insert(key, value) {
+                        hit_count += 1;
+                    }
+                }
+                hit_count
+            });
+            black_box(hits);
         }
     }
 }
@@ -298,5 +320,16 @@ mod tests {
 
         let v3 = compute_value(43);
         assert_ne!(v1, v3);
+    }
+
+    #[test]
+    fn test_lru_get_or_insert() {
+        let mut cache = LruCache::new();
+        let val = [0xDDu8; VALUE_SIZE];
+
+        // Miss — should insert
+        assert!(!cache.get_or_insert(42, &val));
+        // Hit — should find it
+        assert!(cache.get_or_insert(42, &val));
     }
 }

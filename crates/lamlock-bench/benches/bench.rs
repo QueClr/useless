@@ -6,6 +6,7 @@ use lamlock::Lock;
 
 use lamlock_bench::schedule::Schedule;
 use lamlock_bench::workloads::Workload;
+use lamlock_bench::workloads::btree::BTreeWorkload;
 use lamlock_bench::workloads::combining::CombiningWorkload;
 use lamlock_bench::workloads::database::DatabaseWorkload;
 use lamlock_bench::workloads::kdtree::KdTreeWorkload;
@@ -81,6 +82,10 @@ fn bench_database(c: &mut Criterion) {
     bench_workload(c, &DatabaseWorkload);
 }
 
+fn bench_btree(c: &mut Criterion) {
+    bench_workload(c, &BTreeWorkload);
+}
+
 fn bench_slab(c: &mut Criterion) {
     bench_workload(c, &SlabWorkload);
 }
@@ -99,6 +104,7 @@ criterion_group!(
     bench_nbody,
     bench_kdtree,
     bench_database,
+    bench_btree,
     bench_slab,
     bench_wal,
     bench_lru

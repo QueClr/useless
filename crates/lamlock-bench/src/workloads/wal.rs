@@ -12,6 +12,9 @@ const MIN_RECORD_SIZE: usize = 64;
 const MAX_RECORD_SIZE: usize = 512;
 const RECORD_HEADER_SIZE: usize = 24;
 
+/// Batch size: how many records each thread appends per lock.schedule() call.
+const BATCH_SIZE: usize = 1000;
+
 /// FNV-1a hash (32-bit).
 fn fnv1a(data: &[u8]) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
@@ -71,7 +74,7 @@ impl Workload for WalWorkload {
     }
 
     fn description(&self) -> &'static str {
-        "Write-ahead log — serialize records outside lock, append inside"
+        "Write-ahead log — serialize records outside lock, batch-append inside"
     }
 
     fn init_state(&self) -> Self::State {
@@ -86,43 +89,46 @@ impl Workload for WalWorkload {
         ops: usize,
     ) {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(thread_id as u64 * 77777 + 31337);
-        let mut record_buf = vec![0u8; MAX_RECORD_SIZE];
 
+        // [OUTSIDE] Pre-generate all records before touching the lock
+        let mut records: Vec<Vec<u8>> = Vec::with_capacity(ops);
         for _ in 0..ops {
-            // [OUTSIDE] Generate record size and build record
             let record_size = rng.random_range(MIN_RECORD_SIZE..=MAX_RECORD_SIZE);
             let payload_size = record_size - RECORD_HEADER_SIZE;
-
-            // Determine key_len and value_len from payload
             let key_len = (payload_size / 3).max(1) as u16;
             let value_len = (payload_size - key_len as usize) as u16;
 
-            // Fill header fields
-            // [0..8]   lsn placeholder (0)
+            let mut record_buf = vec![0u8; record_size];
+            // Header
             record_buf[0..8].copy_from_slice(&0u64.to_le_bytes());
-            // [8..12]  record_len
             record_buf[8..12].copy_from_slice(&(record_size as u32).to_le_bytes());
-            // [12..14] key_len
             record_buf[12..14].copy_from_slice(&key_len.to_le_bytes());
-            // [14..16] value_len
             record_buf[14..16].copy_from_slice(&value_len.to_le_bytes());
-            // [20..24] padding
             record_buf[20..24].copy_from_slice(&0u32.to_le_bytes());
 
-            // Fill payload with random bytes
+            // Fill payload
             for byte in &mut record_buf[RECORD_HEADER_SIZE..record_size] {
                 *byte = rng.random::<u8>();
             }
 
-            // Compute FNV-1a checksum over payload
+            // Checksum
             let checksum = fnv1a(&record_buf[RECORD_HEADER_SIZE..record_size]);
-            // [16..20] checksum
             record_buf[16..20].copy_from_slice(&checksum.to_le_bytes());
 
-            // [INSIDE] Append record under lock
-            let record = &record_buf[..record_size];
-            let lsn = lock.schedule(|wal| wal.append(record));
-            black_box(lsn);
+            records.push(record_buf);
+        }
+
+        // [INSIDE] Submit records in BATCHES — the combiner appends many records
+        // while the WAL buffer stays hot in cache.
+        for batch in records.chunks(BATCH_SIZE) {
+            let last_lsn = lock.schedule(|wal| {
+                let mut lsn = 0u64;
+                for record in batch {
+                    lsn = wal.append(record);
+                }
+                lsn
+            });
+            black_box(last_lsn);
         }
     }
 }

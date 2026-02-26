@@ -10,8 +10,10 @@ use crate::workloads::Workload;
 const NUM_SLABS: usize = 64;
 const SLOTS_PER_SLAB: usize = 512; // 8 × u64 bitmap words
 const BITMAP_WORDS: usize = SLOTS_PER_SLAB / 64;
+/// Batch size: how many alloc/free ops each thread submits per lock.schedule() call.
+const BATCH_SIZE: usize = 1000;
+/// Max slots a single thread may hold at once.
 const MAX_HELD_PER_THREAD: usize = 256;
-const SLOT_SIZE: usize = 64;
 
 struct Slab {
     bitmap: [u64; BITMAP_WORDS], // 1 = occupied, 0 = free
@@ -74,6 +76,12 @@ impl SlabAllocator {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SlabOp {
+    Alloc,
+    Free(usize),
+}
+
 pub struct SlabWorkload;
 
 impl Workload for SlabWorkload {
@@ -84,7 +92,7 @@ impl Workload for SlabWorkload {
     }
 
     fn description(&self) -> &'static str {
-        "Slab allocator bitmap — scan/modify bitmaps inside lock, write scratch buffer outside"
+        "Slab allocator bitmap — batched alloc/free ops inside lock"
     }
 
     fn init_state(&self) -> Self::State {
@@ -111,40 +119,69 @@ impl Workload for SlabWorkload {
     ) {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(thread_id as u64 * 11111 + 99999);
         let mut held: Vec<usize> = Vec::with_capacity(MAX_HELD_PER_THREAD);
-        let scratch_size = MAX_HELD_PER_THREAD * SLOT_SIZE;
-        let mut scratch = vec![0u8; scratch_size];
-        let mut accumulator: u64 = 0;
 
+        // Pre-generate all operations
+        let mut operations: Vec<SlabOp> = Vec::with_capacity(ops);
         for _ in 0..ops {
             if held.len() < MAX_HELD_PER_THREAD && rng.random::<f64>() < 0.6 {
-                // Allocate
-                let slot = lock.schedule(|alloc| alloc.alloc());
-                if let Some(slot) = black_box(slot) {
-                    // Outside lock: write to scratch buffer at slot-derived offset
-                    let offset = (slot * SLOT_SIZE) % (scratch_size - SLOT_SIZE);
-                    let end = offset + SLOT_SIZE;
-                    let pattern = (slot & 0xFF) as u8;
-                    for byte in &mut scratch[offset..end] {
-                        *byte ^= pattern;
-                    }
-                    held.push(slot);
-                }
+                operations.push(SlabOp::Alloc);
+                // Placeholder — we'll get real slot IDs during execution
+                held.push(0);
             } else if !held.is_empty() {
-                // Free
                 let idx = rng.random_range(0..held.len());
-                let slot = held.swap_remove(idx);
-
-                // Outside lock: read from scratch buffer, accumulate
-                let offset = (slot % scratch.len()).saturating_sub(SLOT_SIZE).max(0);
-                let end = (offset + SLOT_SIZE).min(scratch.len());
-                for &byte in &scratch[offset..end] {
-                    accumulator = accumulator.wrapping_add(byte as u64);
-                }
-
-                lock.schedule(|alloc| alloc.free(slot));
+                held.swap_remove(idx);
+                operations.push(SlabOp::Free(0)); // placeholder
+            } else {
+                operations.push(SlabOp::Alloc);
+                held.push(0);
             }
         }
-        black_box(accumulator);
+
+        // Reset held for actual execution
+        held.clear();
+
+        // Submit work in BATCHES — the combiner processes many bitmap operations
+        // with the slab bitmaps hot in cache.
+        for batch_ops in operations.chunks(BATCH_SIZE) {
+            // Determine which ops in this batch are frees and supply slot IDs
+            let mut batch: Vec<SlabOp> = Vec::with_capacity(batch_ops.len());
+            for op in batch_ops {
+                match op {
+                    SlabOp::Alloc => batch.push(SlabOp::Alloc),
+                    SlabOp::Free(_) => {
+                        if let Some(slot) = held.pop() {
+                            batch.push(SlabOp::Free(slot));
+                        } else {
+                            batch.push(SlabOp::Alloc);
+                        }
+                    }
+                }
+            }
+
+            let results = lock.schedule(|alloc| {
+                let mut allocated = Vec::new();
+                for op in &batch {
+                    match *op {
+                        SlabOp::Alloc => {
+                            if let Some(slot) = alloc.alloc() {
+                                allocated.push(slot);
+                            }
+                        }
+                        SlabOp::Free(slot) => {
+                            alloc.free(slot);
+                        }
+                    }
+                }
+                allocated
+            });
+
+            held.extend(results);
+            // Trim if too many held
+            while held.len() > MAX_HELD_PER_THREAD {
+                held.pop();
+            }
+        }
+        black_box(&held);
     }
 }
 
