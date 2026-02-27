@@ -15,9 +15,16 @@ pub trait Schedule<T>: Sync + Send {
         R: Send;
 }
 
-impl<T: Send> Schedule<T> for Lock<T> {
+impl<T: Send, const USE_FUTEX: bool, const PANIC_SAFE: bool> Schedule<T>
+    for Lock<T, USE_FUTEX, PANIC_SAFE>
+{
     fn name() -> &'static str {
-        "lamlock"
+        match (USE_FUTEX, PANIC_SAFE) {
+            (true, true) => "lamlock",
+            (true, false) => "lamlock-no-panic",
+            (false, true) => "lamlock-spin",
+            (false, false) => "lamlock-spin-no-panic",
+        }
     }
     fn new(value: T) -> Self {
         Lock::new(value)

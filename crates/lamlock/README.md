@@ -87,7 +87,7 @@ Here’s an example where `lamlock` performs poorly:
 fn integer_add_bench_bad() {
     use lamlock::Lock; 
     let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let lock = Lock::new(0);
+    let lock: Lock<_> = Lock::new(0);
     std::thread::scope(|scope| {
         for _ in 0..num_threads {
             let lock = &lock;

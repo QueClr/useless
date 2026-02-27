@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use crate::{LockResult, bomb::HeavyWeightBomb, futex, rawlock::RawLock};
+use crate::{bomb::HeavyWeightBomb, futex, rawlock::RawLock, LockResult};
 
 const SPIN_LIMIT: usize = 100;
 const WAITING: u32 = 0;
@@ -30,14 +30,14 @@ impl Node {
     }
 
     /// Go to sleep until the futex is woken up with a message.
-    pub fn wait(&self) -> u32 {
+    pub fn wait<const USE_FUTEX: bool>(&self) -> u32 {
         match self
             .futex
             .compare_exchange(WAITING, SLEEPING, Ordering::AcqRel, Ordering::Acquire)
         {
             Ok(_) => {
                 let futex = NonNull::from(&self.futex);
-                futex::Futex::wait(futex, SLEEPING);
+                futex::Futex::wait::<USE_FUTEX>(futex, SLEEPING);
                 self.futex.load(Ordering::Acquire)
             }
             Err(value) => value,
@@ -45,23 +45,23 @@ impl Node {
     }
 
     /// Wakes up the futex with a message.
-    fn wake(this: NonNull<Self>, message: u32) {
+    fn wake<const USE_FUTEX: bool>(this: NonNull<Self>, message: u32) {
         let mutex = unsafe { NonNull::from(&this.as_ref().futex) };
-        futex::Futex::notify(mutex, message, SLEEPING);
+        futex::Futex::notify::<USE_FUTEX>(mutex, message, SLEEPING);
     }
 
     /// Wake up the futex with `DONE` message.
-    pub fn wake_as_done(this: NonNull<Self>) {
-        Self::wake(this, DONE);
+    pub fn wake_as_done<const USE_FUTEX: bool>(this: NonNull<Self>) {
+        Self::wake::<USE_FUTEX>(this, DONE);
     }
     /// Wake up the futex with `HEAD` message.
-    pub fn wake_as_head(this: NonNull<Self>) {
-        Self::wake(this, HEAD);
+    pub fn wake_as_head<const USE_FUTEX: bool>(this: NonNull<Self>) {
+        Self::wake::<USE_FUTEX>(this, HEAD);
     }
 
     /// Wake up the futex with `POISONED` message.
-    pub fn wake_as_poisoned(this: NonNull<Self>) {
-        Self::wake(this, POISONED);
+    pub fn wake_as_poisoned<const USE_FUTEX: bool>(this: NonNull<Self>) {
+        Self::wake::<USE_FUTEX>(this, POISONED);
     }
 
     /// Get the successor node.
@@ -86,8 +86,11 @@ impl Node {
     }
 
     /// Attach the node to a raw lock.
-    pub fn attach(this: NonNull<Self>, raw: &RawLock) -> LockResult<()> {
-        let mut bomb = HeavyWeightBomb::new(raw, this);
+    pub fn attach<const USE_FUTEX: bool, const PANIC_SAFE: bool>(
+        this: NonNull<Self>,
+        raw: &RawLock,
+    ) -> LockResult<()> {
+        let mut bomb = HeavyWeightBomb::<PANIC_SAFE, USE_FUTEX>::new(raw, this);
         match raw.swap_tail(this) {
             Some(prev) => unsafe {
                 prev.as_ref().store_next(this);
@@ -99,7 +102,7 @@ impl Node {
                             break 'waiting;
                         }
                     }
-                    status = this.as_ref().wait();
+                    status = this.as_ref().wait::<USE_FUTEX>();
                 }
                 if status == DONE {
                     bomb.diffuse();
@@ -138,7 +141,7 @@ impl Node {
             }
             match unsafe { cursor.as_ref().load_next(Ordering::Acquire) } {
                 Some(next) => {
-                    Node::wake_as_done(cursor);
+                    Node::wake_as_done::<USE_FUTEX>(cursor);
                     cursor = next;
                     bomb.reset(cursor);
                 }
@@ -147,7 +150,7 @@ impl Node {
         }
 
         if raw.try_close(cursor) {
-            Node::wake_as_done(cursor);
+            Node::wake_as_done::<USE_FUTEX>(cursor);
 
             raw.release();
             bomb.diffuse();
@@ -157,8 +160,8 @@ impl Node {
         loop {
             match unsafe { cursor.as_ref().load_next(Ordering::Acquire) } {
                 Some(next) => {
-                    Node::wake_as_head(next);
-                    Node::wake_as_done(cursor);
+                    Node::wake_as_head::<USE_FUTEX>(next);
+                    Node::wake_as_done::<USE_FUTEX>(cursor);
                     bomb.diffuse();
                     return Ok(());
                 }
@@ -185,11 +188,11 @@ mod tests {
             {
                 let node = &node;
                 s.spawn(move || {
-                    let result = node.wait();
+                    let result = node.wait::<true>();
                     assert_eq!(result, HEAD);
                 });
             }
-            Node::wake((&node).into(), HEAD);
+            Node::wake::<true>((&node).into(), HEAD);
         })
     }
 
@@ -202,13 +205,13 @@ mod tests {
                 s.spawn(move || {
                     let local_node = Node::new(|_| {});
                     node.store_next(NonNull::from(&local_node));
-                    assert_eq!(local_node.wait(), DONE);
+                    assert_eq!(local_node.wait::<true>(), DONE);
                 });
             }
             loop {
                 match node.load_next(Ordering::Acquire) {
                     Some(next) => {
-                        Node::wake(next, DONE);
+                        Node::wake::<true>(next, DONE);
                         break;
                     }
                     None => core::hint::spin_loop(),
@@ -247,7 +250,7 @@ mod tests {
                         }),
                         counter,
                     };
-                    Node::attach(NonNull::from(&combined_node).cast(), lock).unwrap();
+                    Node::attach::<true, true>(NonNull::from(&combined_node).cast(), lock).unwrap();
                 });
             }
         });

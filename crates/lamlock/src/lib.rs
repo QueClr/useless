@@ -45,14 +45,21 @@ impl core::error::Error for LockNotPoisoned {}
 /// The `Lock` struct is a thread-safe, poisonable lock that allows for safe concurrent access to data.
 /// Create a new `Lock` with the [`Lock::new`] method.
 /// To get access to the data, you can use the [`Lock::run`] method.
-pub struct Lock<T> {
+///
+/// The const generic parameters control lock behavior:
+/// - `USE_FUTEX`: when `true` (default), uses futex syscalls for waiting; when `false`, uses pure spinning.
+/// - `PANIC_SAFE`: when `true` (default), enables panic-poisoning via bomb types; when `false`, disables it.
+pub struct Lock<T, const USE_FUTEX: bool = true, const PANIC_SAFE: bool = true> {
     raw: rawlock::RawLock,
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: Send> Sync for Lock<T> {}
+unsafe impl<T: Send, const USE_FUTEX: bool, const PANIC_SAFE: bool> Sync
+    for Lock<T, USE_FUTEX, PANIC_SAFE>
+{
+}
 
-impl<T> Lock<T> {
+impl<T, const USE_FUTEX: bool, const PANIC_SAFE: bool> Lock<T, USE_FUTEX, PANIC_SAFE> {
     /// Create a new lock with the given data.
     pub const fn new(data: T) -> Self {
         Self {
@@ -98,7 +105,7 @@ impl<T> Lock<T> {
             result: Cell::new(MaybeUninit::uninit()),
         };
         let this = NonNull::from(&combined_node).cast();
-        Node::attach(this, &self.raw)?;
+        Node::attach::<USE_FUTEX, PANIC_SAFE>(this, &self.raw)?;
         Ok(unsafe { combined_node.result.into_inner().assume_init() })
     }
 
@@ -109,7 +116,7 @@ impl<T> Lock<T> {
     /// 2. If the lock is poisoned or cannot be acquired immediately, it schedules the closure to run later.
     /// ```rust
     /// use lamlock::Lock;
-    /// let lock = Lock::new(0);
+    /// let lock: Lock<_> = Lock::new(0);
     /// lock.run(|data| {
     ///   *data += 1;
     /// }).unwrap();
@@ -121,7 +128,7 @@ impl<T> Lock<T> {
         R: Send,
     {
         if !self.raw.has_tail(Ordering::Relaxed) && self.raw.try_acquire()? {
-            let bomb = bomb::LightWeightBomb::new(&self.raw);
+            let bomb = bomb::LightWeightBomb::<PANIC_SAFE>::new(&self.raw);
             let result = f(unsafe { &mut *self.data.get() });
             self.raw.release();
             bomb.diffuse();
@@ -138,7 +145,7 @@ impl<T> Lock<T> {
     /// ```rust
     /// use lamlock::Lock;
     /// use std::ops::ControlFlow;
-    /// let lock = Lock::new(0);
+    /// let lock: Lock<_> = Lock::new(0);
     /// lock.poison().unwrap();
     /// assert!(lock.run(|_| ()).is_err());
     /// lock.inspect_poison(|_| ControlFlow::Break(()));
@@ -176,7 +183,7 @@ mod tests {
 
     #[test]
     fn smoke_test() {
-        let lock = Lock::new(0);
+        let lock: Lock<_> = Lock::new(0);
         lock.run(|data| {
             *data += 1;
         })
@@ -187,7 +194,7 @@ mod tests {
     #[test]
     fn multi_thread_test() {
         let cnt = 16;
-        let lock = Lock::new(0);
+        let lock: Lock<_> = Lock::new(0);
         std::thread::scope(|scope| {
             for i in 0..cnt {
                 let lock = &lock;
@@ -207,7 +214,7 @@ mod tests {
     #[should_panic]
     fn mutli_thread_panic_chain_test() {
         let cnt = 16;
-        let lock = Lock::new(0);
+        let lock: Lock<_> = Lock::new(0);
         std::thread::scope(|scope| {
             for i in 0..cnt {
                 let lock = &lock;
@@ -226,7 +233,7 @@ mod tests {
 
     #[test]
     fn multi_thread_inspect_poison() {
-        let lock = Lock::new(std::string::String::new());
+        let lock: Lock<_> = Lock::new(std::string::String::new());
         std::thread::scope(|scope| {
             lock.poison().unwrap();
             lock.inspect_poison(|_| ControlFlow::Break(())).unwrap();
@@ -250,5 +257,46 @@ mod tests {
             assert_eq!(lock.run(|x| x.len()).unwrap(), 16);
             assert_eq!(lock.run(|x| x.chars().all(|c| c == 'A')).unwrap(), true);
         });
+    }
+
+    /// Helper: run a multi-threaded increment test on a Lock with given const generics.
+    fn variant_multi_thread_test<const USE_FUTEX: bool, const PANIC_SAFE: bool>() {
+        const NUM_THREADS: usize = 100;
+        const OPS_PER_THREAD: usize = 1000;
+        let lock: Lock<usize, USE_FUTEX, PANIC_SAFE> = Lock::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..NUM_THREADS {
+                let lock = &lock;
+                scope.spawn(move || {
+                    for _ in 0..OPS_PER_THREAD {
+                        lock.run(|data| {
+                            *data += 1;
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(lock.run(|x| *x).unwrap(), NUM_THREADS * OPS_PER_THREAD,);
+    }
+
+    #[test]
+    fn variant_futex_panic_safe() {
+        variant_multi_thread_test::<true, true>();
+    }
+
+    #[test]
+    fn variant_futex_no_panic() {
+        variant_multi_thread_test::<true, false>();
+    }
+
+    #[test]
+    fn variant_spin_panic_safe() {
+        variant_multi_thread_test::<false, true>();
+    }
+
+    #[test]
+    fn variant_spin_no_panic() {
+        variant_multi_thread_test::<false, false>();
     }
 }

@@ -1,3 +1,5 @@
+pub mod btree;
+pub mod hashtable;
 pub mod pqueue;
 pub mod ringbuf;
 pub mod slab;
