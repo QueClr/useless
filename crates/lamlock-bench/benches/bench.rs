@@ -48,7 +48,7 @@ fn bench_workload<W: Workload>(c: &mut Criterion, workload: &W) {
     let mut group = c.benchmark_group(workload.name());
     group.sample_size(10);
     group.measurement_time(std::time::Duration::from_secs(10));
-    for &threads in &[64, 128, 256, 512] {
+    for &threads in &[2, 4, 8, 16, 32, 64, 128, 256, 512] {
         // lamlock (futex + panic-safe)
         group.bench_with_input(BenchmarkId::new("lamlock", threads), &threads, |b, &t| {
             run_bench::<W, Lock<W::State, true, true>>(b, t, OPS_PER_THREAD, workload)

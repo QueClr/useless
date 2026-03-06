@@ -4,18 +4,21 @@
 import json
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
 CRITERION_DIR = Path(__file__).resolve().parent.parent.parent / "target" / "criterion"
 WORKLOADS = ["stack", "pqueue", "ringbuf", "slab", "hashtable", "btree"]
-THREADS = [64, 128, 256, 512]
+THREADS = [2, 4, 8, 16, 32, 64, 128, 256, 512]
 VARIANTS = ["lamlock", "lamlock-no-panic", "lamlock-spin", "lamlock-spin-no-panic", "std-mutex"]
 
 # Short display names to keep the table narrow.
 SHORT = {
-    "lamlock": "lam",
-    "lamlock-no-panic": "lam-np",
-    "lamlock-spin": "spin",
-    "lamlock-spin-no-panic": "spin-np",
-    "std-mutex": "std",
+    "lamlock": "ResiLock",
+    "lamlock-no-panic": "ResiLock-np",
+    "lamlock-spin": "ResiLock-spin",
+    "lamlock-spin-no-panic": "ResiLock-spin-np",
+    "std-mutex": "std-mutex",
 }
 
 
@@ -114,6 +117,62 @@ def main():
     present = [v for v in VARIANTS if any(v in est for _, _, est in rows)]
 
     print_table("Benchmark Results", rows, present)
+    plot_graphs(rows, present)
+
+
+def plot_graphs(rows, present):
+    plt.rcParams.update({
+        "font.size": 14,
+        "axes.titlesize": 18,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 13,
+        "ytick.labelsize": 13,
+        "legend.fontsize": 13,
+    })
+
+    out_dir = Path(__file__).resolve().parent / "plots"
+    out_dir.mkdir(exist_ok=True)
+
+    others = [v for v in present if v != "std-mutex"]
+
+    # Group rows by workload
+    by_workload = {}
+    for w, t, est in rows:
+        by_workload.setdefault(w, []).append((t, est))
+
+    for w, entries in by_workload.items():
+        entries.sort(key=lambda x: x[0])
+
+        # Only plot points where std-mutex baseline exists
+        baseline = {t: est["std-mutex"] for t, est in entries if "std-mutex" in est}
+        if not baseline:
+            continue
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # Draw std-mutex as a flat 1.0 reference line
+        ax.axhline(1.0, color="black", linestyle="--", linewidth=1.5, label=SHORT["std-mutex"])
+
+        for v in others:
+            threads = [t for t, est in entries if v in est and t in baseline]
+            ratios = [est[v] / baseline[t] for t, est in entries if v in est and t in baseline]
+            if threads:
+                ax.plot(threads, ratios, marker="o", markersize=7, linewidth=2.5, label=SHORT[v])
+
+        ax.set_xscale("log", base=2)
+        ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
+        ax.xaxis.set_major_locator(ticker.FixedLocator(THREADS))
+        ax.set_xlabel("Threads")
+        ax.set_ylabel("Time (normalized to std-mutex)")
+        ax.set_title(f"{w}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+
+        dest = out_dir / f"{w}.png"
+        fig.savefig(dest, dpi=300)
+        plt.close(fig)
+        print(f"  saved {dest}")
 
 
 if __name__ == "__main__":
