@@ -7,7 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-CRITERION_DIR = Path(__file__).resolve().parent.parent.parent / "target" / "criterion"
+TARGET_DIR = Path(__file__).resolve().parent.parent.parent / "target"
+CRITERION_DIR = TARGET_DIR / "criterion"
 WORKLOADS = ["stack", "pqueue", "ringbuf", "slab", "hashtable", "btree"]
 THREADS = [2, 4, 8, 16, 32, 64, 128, 256, 512]
 VARIANTS = ["lamlock", "lamlock-no-panic", "lamlock-spin", "lamlock-spin-no-panic", "std-mutex"]
@@ -20,6 +21,16 @@ SHORT = {
     "lamlock-spin-no-panic": "ResiLock-spin-np",
     "std-mutex": "std-mutex",
 }
+
+
+plt.rcParams.update({
+    "font.size": 16,
+    "axes.titlesize": 22,
+    "axes.labelsize": 19,
+    "xtick.labelsize": 15,
+    "ytick.labelsize": 15,
+    "legend.fontsize": 15,
+})
 
 
 def read_estimate(workload, impl_name, threads):
@@ -96,6 +107,44 @@ def print_table(title, rows, present):
     print(f"  {dsep}")
 
 
+def plot_panic_timing():
+    """Plot panic cleanup times from panic_timing_results.json."""
+    panic_results = TARGET_DIR / "panic_timing_results.json"
+    if not panic_results.exists():
+        return
+
+    with open(panic_results) as f:
+        data = json.load(f)
+
+    out_dir = TARGET_DIR / "plots"
+    out_dir.mkdir(exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for variant, label in [("lamlock", "ResiLock (futex)"), ("lamlock-spin", "ResiLock (spin)")]:
+        if variant not in data:
+            continue
+        threads = sorted(int(k) for k in data[variant].keys())
+        medians = [data[variant][str(t)] / 1e3 for t in threads]  # ns -> µs
+        ax.plot(threads, medians, marker="o", markersize=7,
+                linewidth=2.5, label=label)
+
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
+    ax.xaxis.set_major_locator(ticker.FixedLocator(THREADS))
+    ax.set_xlabel("Threads")
+    ax.set_ylabel("Cleanup Time (µs)")
+    ax.set_title("Panic Cleanup Time (BTree)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    dest = out_dir / "panic_cleanup.png"
+    fig.savefig(dest, dpi=300)
+    plt.close(fig)
+    print(f"  saved {dest}")
+
+
 def main():
     rows = []
     for w in WORKLOADS:
@@ -111,26 +160,17 @@ def main():
 
     if not rows:
         print("No benchmark results found in", CRITERION_DIR)
-        return
+    else:
+        # Determine which variants actually have data
+        present = [v for v in VARIANTS if any(v in est for _, _, est in rows)]
+        print_table("Benchmark Results", rows, present)
+        plot_graphs(rows, present)
 
-    # Determine which variants actually have data
-    present = [v for v in VARIANTS if any(v in est for _, _, est in rows)]
-
-    print_table("Benchmark Results", rows, present)
-    plot_graphs(rows, present)
+    plot_panic_timing()
 
 
 def plot_graphs(rows, present):
-    plt.rcParams.update({
-        "font.size": 14,
-        "axes.titlesize": 18,
-        "axes.labelsize": 16,
-        "xtick.labelsize": 13,
-        "ytick.labelsize": 13,
-        "legend.fontsize": 13,
-    })
-
-    out_dir = Path(__file__).resolve().parent / "plots"
+    out_dir = TARGET_DIR / "plots"
     out_dir.mkdir(exist_ok=True)
 
     others = [v for v in present if v != "std-mutex"]

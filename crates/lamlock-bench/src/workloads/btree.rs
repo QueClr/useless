@@ -92,7 +92,7 @@ impl BTree {
     }
 
     /// Search for a key. Returns Some(value) if found.
-    fn search(&self, key: u64) -> Option<u64> {
+    pub fn search(&self, key: u64) -> Option<u64> {
         let mut cur = self.root;
         loop {
             if cur == NIL {
@@ -116,7 +116,7 @@ impl BTree {
     }
 
     /// Insert a key-value pair. Returns true if newly inserted.
-    fn insert(&mut self, key: u64, val: u64) -> bool {
+    pub fn insert(&mut self, key: u64, val: u64) -> bool {
         // Check if already present.
         if self.search(key).is_some() {
             return false;
@@ -227,7 +227,7 @@ impl BTree {
     }
 
     /// Delete a key. Returns true if the key was found and removed.
-    fn delete(&mut self, key: u64) -> bool {
+    pub fn delete(&mut self, key: u64) -> bool {
         if self.root == NIL {
             return false;
         }
